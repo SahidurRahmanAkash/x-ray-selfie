@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>X-Ray Mirror</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Skeleton Selfie</title>
 <style>
   :root { --bg:#090c13; --panel:#141926; --line:#262d42; --fg:#eef1f8; --dim:#8b95b2;
           --accent:#7fd1ff; --ok:#57d98a; --bad:#ff5d73; }
@@ -56,7 +56,39 @@
   .small { font-size:12px; color:var(--dim); margin:0; }
   .linkbtn { font:inherit; font-size:12px; color:var(--accent); background:none; border:0; padding:0; cursor:pointer; margin-top:10px; }
   [hidden] { display:none !important; }
-  @media (max-width:900px) { .wrap { flex-direction:column; align-items:stretch; } aside { flex:none; } .stage { width:100%; } }
+  /* capture bar */
+  #capbar { position:absolute; left:0; right:0; bottom:0; display:none; align-items:center; justify-content:center; gap:22px;
+            padding:12px 12px calc(12px + env(safe-area-inset-bottom)); z-index:5;
+            background:linear-gradient(to top, rgba(5,7,12,.72), rgba(5,7,12,0)); }
+  #capbar.on { display:flex; }
+  .capbtn { width:64px; height:64px; border-radius:50%; border:3px solid #fff; background:rgba(255,255,255,.14); color:#fff;
+            display:flex; align-items:center; justify-content:center; font:600 12px system-ui,sans-serif; cursor:pointer; padding:0; }
+  .capbtn:active { transform:scale(.94); }
+  #photoBtn::after { content:""; width:44px; height:44px; border-radius:50%; background:#fff; }
+  #recBtn::after { content:""; width:26px; height:26px; border-radius:50%; background:var(--bad); transition:all .15s; }
+  #recBtn.rec::after { border-radius:6px; width:24px; height:24px; }
+  #recBtn.rec { border-color:var(--bad); }
+  #rectime { position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:5; background:rgba(255,93,115,.92);
+             color:#fff; font:700 13px ui-monospace,Menlo,Consolas,monospace; padding:4px 11px; border-radius:99px; }
+  #toast { position:fixed; left:50%; bottom:calc(20px + env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:100;
+           background:#141926; border:1px solid var(--line); color:var(--fg); padding:10px 16px; border-radius:12px; font-size:14px; max-width:90vw; text-align:center; }
+  #flash { position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:6; transition:opacity .35s; }
+  #flash.on { opacity:.85; transition:none; }
+  .stage { width:min(100%, calc((100vh - 40px) * var(--ar, 1.3333))); width:min(100%, calc((100dvh - 40px) * var(--ar, 1.3333))); touch-action:manipulation; }
+  @media (max-width:900px) {
+    .wrap { flex-direction:column; align-items:stretch; padding:10px; gap:12px; }
+    aside { flex:none; }
+    .stage { width:100%; border-radius:12px; }
+    .stagecol { display:block; }
+    #intro h2 { font-size:24px; }
+    button.big { padding:15px 26px; font-size:18px; }
+    .chips button, .seg button { padding:10px 13px; font-size:14px; }
+    input[type=checkbox] { width:22px; height:22px; }
+    .row input[type=range] { max-width:55%; height:28px; }
+    select { padding:9px 10px; max-width:58%; }
+    .checks { gap:12px 12px; }
+    h1 { display:none; }
+  }
 </style>
 </head>
 <body>
@@ -67,8 +99,14 @@
       <canvas id="shade"></canvas>
       <canvas id="gl"></canvas>
       <canvas id="hud"></canvas>
+      <div id="flash"></div>
+      <div id="rectime" hidden>REC 00:00</div>
+      <div id="capbar">
+        <button class="capbtn" id="photoBtn" type="button" aria-label="Take photo"></button>
+        <button class="capbtn" id="recBtn" type="button" aria-label="Record video"></button>
+      </div>
       <div id="intro">
-        <h2>X-RAY MIRROR</h2>
+        <h2>SKELETON SELFIE</h2>
         <p>See the skull, brain and muscles inside your own head, tracked live through your camera. Hold a hand up to see its bones.</p>
         <button class="big" id="start">Start camera</button>
       </div>
@@ -76,7 +114,7 @@
   </div>
 
   <aside>
-    <h1>X-Ray Mirror</h1>
+    <h1>Skeleton Selfie</h1>
     <div class="panel"><div id="status">Click Start camera, then allow the camera.</div></div>
 
     <div class="panel">
@@ -276,7 +314,7 @@ function decodeMeshes() {
 }
 
 function buildScene() {
-  renderer = new THREE.WebGLRenderer({ canvas: $("gl"), alpha: true, antialias: true });
+  renderer = new THREE.WebGLRenderer({ canvas: $("gl"), alpha: true, antialias: true, preserveDrawingBuffer: true });
   renderer.setClearColor(0x000000, 0);
   renderer.autoClear = false;
   headScene = new THREE.Scene(); handScene = new THREE.Scene();
@@ -762,6 +800,7 @@ $("start").onclick = async () => {
     if (!handTracker) $("L_hands").disabled = true;
     resize();
     liveLoop();
+    $("capbar").classList.add("on");
   } catch (err) {
     $("start").disabled = false; $("intro").hidden = false;
     const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
@@ -770,6 +809,76 @@ $("start").onclick = async () => {
             : "Could not load the " + stageName + ": " + msg, "bad");
   }
 };
+
+
+// ------------------------------ photo + video capture ------------------------------
+const toastEl = (() => { const d = document.createElement("div"); d.id = "toast"; d.hidden = true; document.body.appendChild(d); return d; })();
+let toastT = 0;
+function toast(t) { toastEl.textContent = t; toastEl.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { toastEl.hidden = true; }, 3200); }
+
+const capCanvas = document.createElement("canvas"), capCtx = capCanvas.getContext("2d");
+function compose() {
+  const gl = $("gl"), w = gl.width || W, h = gl.height || H;
+  if (capCanvas.width !== w || capCanvas.height !== h) { capCanvas.width = w; capCanvas.height = h; }
+  const x = capCtx;
+  x.fillStyle = "#0b1220"; x.fillRect(0, 0, w, h);
+  x.save(); x.translate(w, 0); x.scale(-1, 1);          // same mirror as on screen
+  if (video.videoWidth) x.drawImage(video, 0, 0, w, h);
+  x.drawImage($("shade"), 0, 0, w, h);
+  x.drawImage(gl, 0, 0, w, h);
+  x.restore();
+  x.drawImage($("hud"), 0, 0, w, h);
+}
+function stamp() { const d = new Date(), p = n => String(n).padStart(2, "0");
+  return "skeleton-selfie-" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); }
+function saveBlob(blob, name) {
+  const file = new File([blob], name, { type: blob.type });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  return file;
+}
+
+$("photoBtn").onclick = () => {
+  try {
+    compose();
+    const fl = $("flash"); fl.classList.add("on"); setTimeout(() => fl.classList.remove("on"), 60);
+    capCanvas.toBlob(b => {
+      if (!b) { toast("Could not save the photo."); return; }
+      saveBlob(b, stamp() + ".png"); toast("Photo saved.");
+    }, "image/png");
+  } catch (e) { toast("Photo failed: " + e.message); }
+};
+
+let rec = null;
+function pickMime() {
+  const list = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+  return list.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+}
+function startRec() {
+  if (!window.MediaRecorder || !capCanvas.captureStream) { toast("This browser cannot record video. Try Chrome."); return; }
+  compose();
+  const mime = pickMime();
+  const stream = capCanvas.captureStream(30);
+  const mr = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 6000000 } : { videoBitsPerSecond: 6000000 });
+  const chunks = [];
+  mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  mr.onstop = () => {
+    cancelAnimationFrame(rec.raf); clearInterval(rec.timer);
+    const type = mr.mimeType || mime || "video/webm";
+    const blob = new Blob(chunks, { type });
+    saveBlob(blob, stamp() + (type.includes("mp4") ? ".mp4" : ".webm"));
+    toast("Video saved."); rec = null;
+    $("recBtn").classList.remove("rec"); $("rectime").hidden = true;
+  };
+  rec = { mr, t0: performance.now(), raf: 0, timer: 0 };
+  const pump = () => { compose(); rec.raf = requestAnimationFrame(pump); };
+  pump();
+  rec.timer = setInterval(() => { const s = Math.floor((performance.now() - rec.t0) / 1000);
+    $("rectime").textContent = "REC " + String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); }, 250);
+  mr.start(1000);
+  $("recBtn").classList.add("rec"); $("rectime").textContent = "REC 00:00"; $("rectime").hidden = false;
+}
+$("recBtn").onclick = () => { if (rec) rec.mr.stop(); else startRec(); };
 
 if (DEMO) boot().then(demoLoop).catch(e => setStatus("Demo failed: " + e.message, "bad"));
 </script>
